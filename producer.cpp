@@ -10,11 +10,9 @@
     5. the size of the buffer
 */
 
+
 #include "shared.h" // for SharedBuffer, ProdCom, Semaphores
-#include <stdarg.h> // for va_list, va_start, va_end
-#include <random>   // for random_device, mt19937, uniform_real_distribution
-#include <iostream> // for cout
-#include <errno.h>  // for errno
+
 
 void log_action(const char *action, const char *commodity, double price, const char *format, ...)
 {
@@ -48,39 +46,6 @@ double generate_price(double mean, double stddev)
     return dist(gen);
 }
 
-void error_exit(const char *msg, SharedBuffer *shared_buffer)
-{
-    shmdt(shared_buffer);
-    perror(msg);
-    exit(EXIT_FAILURE);
-}
-
-void wait_sem(int semid, int semnum)
-{
-    struct sembuf op = {semnum, -1, IPC_NOWAIT};
-    if (semop(semid, &op, 1) == -1)
-    {
-        if (errno == EAGAIN)
-        {
-            op.sem_flg = 0;
-            if (semop(semid, &op, 1) == -1)
-            {
-                error_exit("semop", NULL);
-            }
-        }
-        else
-            error_exit("semop", NULL);
-    }
-}
-
-void signal_sem(int semid, int semnum)
-{
-    struct sembuf op = {semnum, 1, 0};
-    if (semop(semid, &op, 1) == -1)
-    {
-        error_exit("semop", NULL);
-    }
-}
 
 int main(int argc, char *argv[])
 {
@@ -209,8 +174,14 @@ int main(int argc, char *argv[])
             shared_buffer->buffer[shared_buffer->in] = commodity;
             shared_buffer->in = (shared_buffer->in + 1) % shared_buffer->buffer_size;
 
-            signal_sem(semid, SEM_MUTEX);
-            signal_sem(semid, SEM_FULL);
+            if(signal_sem(semid, SEM_MUTEX) == -1)
+            {
+                // Semaphore was unavailable, handle accordingly
+                // You might log this event, try again later, or perform other tasks
+                printf("Could not release semaphore, skipping this cycle.\n");
+                // Optional: sleep for a short duration before trying again
+                usleep(1000); // Sleep for 1 millisecond
+            }
         }
         else
         {
