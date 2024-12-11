@@ -1,72 +1,48 @@
 #ifndef SHARED_H
 #define SHARED_H
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>    // For sleep function
-#include <time.h>      // For time functions
-#include <sys/ipc.h>   // For IPC mechanisms
-#include <sys/shm.h>   // For shared memory
-#include <sys/sem.h>   // For semaphores
-#include <sys/types.h>
-#include <errno.h>
-#include <stdarg.h>
+#include <semaphore.h> // for sem_t
+#include <sys/sem.h> // for sembuf
+#include <sys/types.h> // for key_t
+#include <sys/ipc.h> // for ftok
+#include <sys/shm.h> // for shmget, shmat
+#include <time.h> // for time
+#include <stdlib.h> // for exit
+#include <stdio.h> // for fprintf
+#include <sys/mman.h> // for mmap
+#include <string.h> // for memset
+#include <unistd.h> // for sleep
+#include <fcntl.h>  // for O_CREAT
 
-/* Constants */
-#define MAX_COMMODITY_NAME_LENGTH 11  // 10 characters + null terminator
-#define MAX_COMMODITIES 20            // Number of commodities
-
-/* Semaphore indices */
+#define MAX_COMMODITY_NAME_LENGTH 10
+#define MAX_COMMODITIES 10
 #define SEM_MUTEX 0
 #define SEM_EMPTY 1
-#define SEM_FULL  2
+#define SEM_FULL 2
 
-/* Union for semaphore operations */
-union semun {
-    int val;                // Value for SETVAL
-    struct semid_ds *buf;   // Buffer for IPC_STAT, IPC_SET
-    unsigned short *array;  // Array for GETALL, SETALL
-};
 
-/* Commodity price structure */
 typedef struct {
     char name[MAX_COMMODITY_NAME_LENGTH];
-    double price;
+    double AvgPrice;
+    double MeanPrice;
+    double StdDev;
+    int SleepInterval;
     time_t timestamp;
-} Commodity;
+} ProdCom;
 
-/* Shared buffer structure with a flexible array member */
+
 typedef struct {
+    sem_t mutex;
+    sem_t empty;
+    sem_t full;
+} Semaphores;
+
+typedef struct{
+    ProdCom *buffer;
     int in;
     int out;
     int buffer_size;
-    Commodity buffer[];  // Flexible array member
+    Semaphores sems;
 } SharedBuffer;
 
-/* Function to handle errors */
-void error_exit(const char *msg) {
-    perror(msg);
-    exit(EXIT_FAILURE);
-}
-
-void wait_sem(int semid, int semnum) {
-    struct sembuf sem_op;
-    sem_op.sem_num = semnum;
-    sem_op.sem_op = -1;
-    sem_op.sem_flg = 0;
-    if (semop(semid, &sem_op, 1) == -1) {
-        error_exit("semop");
-    }
-}
-void signal_sem(int semid, int semnum) {
-    struct sembuf sem_op;
-    sem_op.sem_num = semnum;
-    sem_op.sem_op = 1;
-    sem_op.sem_flg = 0;
-    if (semop(semid, &sem_op, 1) == -1) {
-        error_exit("semop");
-    }
-}
-
-#endif  // SHARED_H
+#endif
