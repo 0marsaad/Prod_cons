@@ -1,28 +1,29 @@
 #ifndef SHARED_H
 #define SHARED_H
 
-#include <semaphore.h> // for sem_t
-#include <sys/sem.h> // for sembuf
-#include <sys/types.h> // for key_t
-#include <sys/ipc.h> // for ftok
-#include <sys/shm.h> // for shmget, shmat
-#include <time.h> // for time
-#include <stdlib.h> // for exit
-#include <stdio.h> // for fprintf
-#include <sys/mman.h> // for mmap
-#include <string.h> // for memset
-#include <unistd.h> // for sleep
-#include <fcntl.h>  // for O_CREAT
-#include <stdarg.h> // for va_list, va_start, va_end
-#include <random>   // for random_device, mt19937, uniform_real_distribution
-#include <iostream> // for cout
-#include <errno.h>  // for errno
+#include <semaphore.h> 
+#include <sys/sem.h>
+#include <sys/types.h> 
+#include <sys/ipc.h> 
+#include <sys/shm.h> 
+#include <time.h> 
+#include <stdlib.h> 
+#include <stdio.h>
+#include <sys/mman.h> 
+#include <string.h> 
+#include <fcntl.h>  
+#include <unistd.h> 
+#include <stdarg.h> 
+#include <iostream> 
+#include <random>   
+#include <errno.h>
 
+#define MAX_HISTORY 5
 #define MAX_COMMODITY_NAME_LENGTH 10
 #define MAX_COMMODITIES 10
-#define SEM_MUTEX 0
-#define SEM_EMPTY 1
+#define SEM_MUTEX 0 
 #define SEM_FULL 2
+#define SEM_EMPTY 1
 
 
 typedef struct {
@@ -42,12 +43,18 @@ typedef struct {
 } Semaphores;
 
 typedef struct{
-    ProdCom *buffer;
     int in;
     int out;
     int buffer_size;
+    ProdCom *buffer; 
     Semaphores sems;
 } SharedBuffer;
+
+typedef struct {
+    char name[20];    
+    float prices[MAX_HISTORY];  
+    int index;        
+} CommodityHistory;
 
 void error_exit(const char *msg, SharedBuffer *shared_buffer)
 {
@@ -55,7 +62,6 @@ void error_exit(const char *msg, SharedBuffer *shared_buffer)
     perror(msg);
     exit(EXIT_FAILURE);
 }
-
 int wait_sem(int semid, int semnum)
 {
     struct sembuf op = {semnum, -1, IPC_NOWAIT};
@@ -63,15 +69,14 @@ int wait_sem(int semid, int semnum)
     {
         if (errno == EAGAIN)
         {
-            // The semaphore is unavailable
-            return -1; // Indicate that the operation would have blocked
+            return -1; // operation blocked
         }
         else
         {
             error_exit("semop", NULL);
         }
     }
-    return 0; // Success
+    return 0;
 }
 
 int signal_sem(int semid, int semnum)
@@ -81,13 +86,13 @@ int signal_sem(int semid, int semnum)
     {
         if (errno == EAGAIN)
         {
-            // The semaphore is unavailable
-            return -1; // Indicate that the operation would have blocked
+            return -1; // operation blocked
         }
         else
             error_exit("semop", NULL);
     }
-    return 0; // Success
+    return 0;
 }
+
 
 #endif
