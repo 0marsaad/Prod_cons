@@ -17,25 +17,95 @@
 // | Cotton     | 0.0        | 0.0        |
 // +------------+------------+------------+
 
-// build with gcc -o consumer consumer.c -Wall -Wextra -std=c99
+// build with g++ o consumer consumer.c -lrt
 // run with ./consumer <buffer_size>
 // example: ./consumer 40
 
 #include "shared.h"
 
+const char *commodities[MAX_COMMODITIES] = {
+    "ALUMINUM",
+    "SILVER",
+    "COPPER",
+    "GOLD",
+    "CRUDEOIL",
+    "NATURALGAS",
+    "NICKEL",
+    "ZINC",
+    "LEAD",
+    "METHANOL",
+    "COTTON"};
 
-void print_table(SharedBuffer *shared_buffer)
+int semid = -1;
+int shmid = -1;
+SharedBuffer *shared_buffer = NULL;
+
+void error_exit(const char *msg, SharedBuffer *shared_buffer)
 {
-    printf("+------------+------------+------------+\n");
-    printf("| Commodity  | Price      | AVGPrice   |\n");
-    printf("+------------+------------+------------+\n");
-    for (int i = 0; i < shared_buffer->buffer_size; i++)
-    {
-        ProdCom commodity = shared_buffer->buffer[i];
-        printf("| %-10s | %-10.2f | %-10.2f |\n", commodity.name, commodity.MeanPrice, commodity.AvgPrice);
-    }
-    printf("+------------+------------+------------+\n");
+    if (shared_buffer != NULL)
+        shmdt(shared_buffer);
+    if (shmid != -1)
+        shmctl(shmid, IPC_RMID, NULL);
+    if (semid != -1)
+        semctl(semid, 0, IPC_RMID);
+    perror(msg);
+    exit(EXIT_FAILURE);
 }
+
+void init_sem(int empty, int full)
+{
+    key_t key = ftok("Elgoat", 65);
+    semid = semget(key, 3, 0666 | IPC_CREAT);
+    if (semid == -1)
+        error_exit("semget", shared_buffer);
+
+    union semun arg;
+    arg.val = 1;
+    if (semctl(semid, SEM_MUTEX, SETVAL, arg) == -1)
+        error_exit("semctl-set-mutex", shared_buffer);
+    arg.val = empty;
+    if (semctl(semid, SEM_EMPTY, SETVAL, arg) == -1)
+        error_exit("semctl-set-empty", shared_buffer);
+    arg.val = full;
+    if (semctl(semid, SEM_FULL, SETVAL, arg) == -1)
+        error_exit("semctl-set-full", shared_buffer);
+}
+
+void init_shm(int buffer_size)
+{
+    key_t key = ftok("Elgoat2", 75);
+    size_t shmsize = sizeof(SharedBuffer) + buffer_size * sizeof(ProdCom);
+
+    shmid = shmget(key, shmsize, IPC_CREAT | 0666);
+
+    if (shmid == -1)
+        error_exit("shmget", NULL);
+
+    shared_buffer = (SharedBuffer *)shmat(shmid, NULL, 0);
+
+    if (shared_buffer == (void *)-1)
+        error_exit("shmat", shared_buffer);
+
+    memset(shared_buffer, 0, shmsize);
+}
+
+void wait_sem(int semnum)
+{
+    struct sembuf op = {semnum, -1, 0};
+    semop(semid, &op, 1);
+}
+
+void signal_sem(int semnum)
+{
+    struct sembuf op = {semnum, 1, 0};
+    semop(semid, &op, 1);
+}
+
+static double akherPrice[MAX_COMMODITIES] = {0.0};
+static double taree5Price[MAX_COMMODITIES][5] = {{0.0}};
+static int indexP[MAX_COMMODITIES] = {0};
+
+
 
 int main(int argc, char *argv[])
 {
@@ -51,55 +121,78 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Buffer size must be a positive integer.\n");
         exit(EXIT_FAILURE);
     }
+    init_sem(buffer_size, 0);
+    init_shm(buffer_size);
 
-    key_t key = ftok("producer.cpp", 65);
-    if (key == -1)
-        error_exit("ftok", NULL);
 
-    int shmsize = sizeof(SharedBuffer) + buffer_size * sizeof(ProdCom);
-    int shmid = shmget(key, shmsize, 0666);
-    if (shmid == -1)
-        error_exit("shmget", NULL);
-
-    SharedBuffer *shared_buffer = (SharedBuffer *)shmat(shmid, NULL, 0);
-    if (shared_buffer == (void *)-1)
-        error_exit("shmat", shared_buffer);
     
-    int semid = semget(key, 3, 0666);
-    if (semid == -1)
-        error_exit("semget", shared_buffer);
-    
-    
-
     while (true)
     {
-        if (wait_sem(semid, SEM_FULL) == 0)
-        {
-            // Successfully decremented the semaphore
-            // Safe to proceed with accessing the shared resource
-            wait_sem(semid, SEM_MUTEX);
+        wait_sem(SEM_FULL);
+        wait_sem(SEM_MUTEX);
 
-            // Critical section: consume item from the buffer
-            ProdCom commodity = shared_buffer->buffer[shared_buffer->out];
-            shared_buffer->out = (shared_buffer->out + 1) % shared_buffer->buffer_size;
+        char name[MAX_COMMODITY_NAME_LENGTH];
+        double price = shared_buffer->buffer[0].Price;
+        strncpy(name, shared_buffer->buffer[0].name, MAX_COMMODITY_NAME_LENGTH);
 
-            signal_sem(semid, SEM_MUTEX);
-            signal_sem(semid, SEM_EMPTY);
+        signal_sem(SEM_MUTEX);
+        signal_sem(SEM_EMPTY);
 
-            print_table(shared_buffer);
+        for (int i = 0; i < MAX_COMMODITIES; i++){
+            if (strcmp(name, commodities[i]) == 0){
+                int ind = indexP[i] % 5;
+                taree5Price[i][ind] = price;
+                indexP[i]++;
+                break;
+            }
         }
-        else
+        printf("\e[1;1H\e[2J");
+        printf("+------------+--------------+--------------+\n");
+        printf("| Commodity  | Price        | AVGPrice     |\n");
+        printf("+------------+--------------+--------------+\n");
+
+        for (int i = 0; i < MAX_COMMODITIES; i++)
         {
-            // Semaphore was unavailable, handle accordingly
-            // You might log this event, try again later, or perform other tasks
-            printf("Could not acquire semaphore, skipping this cycle.\n");
-            // Optional: sleep for a short duration before trying again
-            usleep(1000); // Sleep for 1 millisecond
+            double price7aly = 0.0;
+            double avgPrice = 0.0;
+            int indcnt = (indexP[i] > 5) ? 5 : indexP[i];
+
+            if(indcnt > 0){
+                int current = indexP[i] % 5;
+                price7aly = taree5Price[i][current];
+            }
+
+            double sum = 0.0;
+            for (int j = 0; j < indcnt; j++)
+            {
+                sum += taree5Price[i][j];
+            }
+            avgPrice = sum / indcnt;
+
+            char* arrow7aly = " ";
+            char* arrowavg = "";
+            if (price7aly > akherPrice[i])
+                arrow7aly = "↑";
+            else if (price7aly < akherPrice[i])
+                arrow7aly = "↓";
+
+            if (avgPrice > akherPrice[i])
+                arrowavg = "↑";
+            else if (avgPrice < akherPrice[i])
+                arrowavg = "↓";
+
+            akherPrice[i] = price7aly;
+
+            printf("| %-10s | %10.2f %s | %10.2f %s |\n", commodities[i], price7aly, arrow7aly, avgPrice, arrowavg);
+
+           
+            
+
         }
-        sleep(1);
+        printf("+------------+--------------+--------------+\n");
+
+        usleep(200000);
     }
 
-    shmdt(shared_buffer);
-
-    return 0;
+            return 0;
 }

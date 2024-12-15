@@ -1,98 +1,81 @@
+/*
+    This file contains the shared data structures and functions used by the producer and consumer processes.
+    The shared data structures are:
+    1. ProdCom: A structure that represents a commodity. It contains the name of the commodity, the average price, the mean price, the standard deviation, the sleep interval, and the timestamp.
+    2. Semaphores: A structure that contains the semaphores used for synchronization.
+    3. SharedBuffer: A structure that contains the shared buffer used for communication between the producer and consumer processes.
+    4. CommodityHistory: A structure that contains the history of a commodity. It contains the name of the commodity, the prices, and the index.
+    The functions are:
+    1. error_exit: A function that prints an error message and exits the program.
+    2. wait_sem: A function that waits on a semaphore.
+    3. signal_sem: A function that signals a semaphore.
+*/
+
 #ifndef SHARED_H
 #define SHARED_H
 
-#include <semaphore.h> 
+#include <sys/types.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
 #include <sys/sem.h>
-#include <sys/types.h> 
-#include <sys/ipc.h> 
-#include <sys/shm.h> 
-#include <time.h> 
-#include <stdlib.h> 
+#include <time.h>
+#include <stdlib.h>
 #include <stdio.h>
-#include <sys/mman.h> 
-#include <string.h> 
-#include <fcntl.h>  
-#include <unistd.h> 
-#include <stdarg.h> 
-#include <iostream> 
-#include <random>   
+#include <unistd.h>
+#include <stdarg.h>
+#include <string.h>
+#include <random>
 #include <errno.h>
 
-#define MAX_HISTORY 5
-#define MAX_COMMODITY_NAME_LENGTH 10
-#define MAX_COMMODITIES 10
-#define SEM_MUTEX 0 
-#define SEM_FULL 2
+#define MAX_COMMODITY_NAME_LENGTH 11
+#define MAX_COMMODITIES 11
+
+// El semaphors 3 
+#define SEM_MUTEX 0
 #define SEM_EMPTY 1
+#define SEM_FULL 2
 
-
-typedef struct {
+// Commodity struct
+typedef struct
+{
     char name[MAX_COMMODITY_NAME_LENGTH];
-    double AvgPrice;
-    double MeanPrice;
-    double StdDev;
-    int SleepInterval;
-    time_t timestamp;
+    double Price;
 } ProdCom;
 
+// hena 3mlt array of commodities
+typedef struct
+{
+    ProdCom buffer[1]; // el 1 place holder haye7sal realloc fel initialization
 
-typedef struct {
-    sem_t mutex;
-    sem_t empty;
-    sem_t full;
-} Semaphores;
-
-typedef struct{
-    int in;
-    int out;
-    int buffer_size;
-    ProdCom *buffer; 
-    Semaphores sems;
 } SharedBuffer;
 
-typedef struct {
-    char name[20];    
-    float prices[MAX_HISTORY];  
-    int index;        
-} CommodityHistory;
+//dol el global variables
+extern int shmid;
+extern int semid;
+extern SharedBuffer *shared_buffer;
 
-void error_exit(const char *msg, SharedBuffer *shared_buffer)
-{
-    shmdt(shared_buffer);
-    perror(msg);
-    exit(EXIT_FAILURE);
-}
-int wait_sem(int semid, int semnum)
-{
-    struct sembuf op = {semnum, -1, IPC_NOWAIT};
-    if (semop(semid, &op, 1) == -1)
-    {
-        if (errno == EAGAIN)
-        {
-            return -1; // operation blocked
-        }
-        else
-        {
-            error_exit("semop", NULL);
-        }
-    }
-    return 0;
-}
+union semun{
+    int val;
+    struct semid_ds *buf;
+    unsigned short *array;
+    struct seminfo *__buf;
+};
 
-int signal_sem(int semid, int semnum)
-{
-    struct sembuf op = {semnum, 1, IPC_NOWAIT};
-    if (semop(semid, &op, 1) == -1)
-    {
-        if (errno == EAGAIN)
-        {
-            return -1; // operation blocked
-        }
-        else
-            error_exit("semop", NULL);
-    }
-    return 0;
-}
 
+// Error handling
+void error_exit(const char *msg, SharedBuffer *shared_buffer);
+
+// bet initialize el semaphores
+void init_sem(int empty, int full);
+
+// Initialize shared memory
+void init_shm(int buffer_size);
+
+// Wait on semaphore
+void wait_sem(int semnum);
+
+// Signal semaphore
+void signal_sem(int semnum);
 
 #endif
+

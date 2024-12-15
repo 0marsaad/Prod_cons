@@ -1,18 +1,25 @@
 /*
-    this is the producer process
-    it generates random prices for commodities and writes them to the shared buffer
-    it also logs the actions it takes
-    it takes in as an argument
-    1. the name of a commodity it is responsible of updating
-    2. the mean price of the commodity
-    3. the standard deviation of the commodity
-    4. the sleep interval
-    5. the size of the buffer
+    Producer program for the commodity price monitoring system.
+    This program generates random prices for a given commodity and stores them in a shared buffer.
+    The shared buffer is read by the consumer program.
+
+    Usage: ./producer <commodity_name> <mean_price> <std_dev> <sleep_interval> <buffer_size>
+
+    build: g++ -o producer producer.cpp -lrt
 */
 
+#include "shared.h"
 
-#include "shared.h" // for SharedBuffer, ProdCom, Semaphores
+#include <stdarg.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <sys/sem.h>
+#include <iostream>
+#include <random>
 
+int semid = -1;
+int shmid = -1;
+SharedBuffer *shared_buffer = NULL;
 
 void log_action(const char *action, const char *commodity, double price, const char *format, ...)
 {
@@ -23,14 +30,11 @@ void log_action(const char *action, const char *commodity, double price, const c
     struct tm *tm_info = localtime(&timeStamp.tv_sec);
     strftime(time_buffer, sizeof(time_buffer), "[%m/%d/%Y %H:%M:%S", tm_info);
 
-    // Get milliseconds
     long milliseconds = timeStamp.tv_nsec / 1000000;
 
-    // Prepare the variable argument list
     va_list args;
     va_start(args, format);
 
-    // Print to stderr
     fprintf(stderr, "%s.%03ld] %s: ", time_buffer, milliseconds, commodity);
     vfprintf(stderr, format, args);
     fprintf(stderr, "\n");
@@ -46,6 +50,66 @@ double generate_price(double mean, double stddev)
     return dist(gen);
 }
 
+void error_exit(const char *msg, SharedBuffer *shared_buffer)
+{
+    if (shared_buffer != NULL)
+        shmdt(shared_buffer);
+    if (shmid != -1)
+        shmctl(shmid, IPC_RMID, NULL);
+    if (semid != -1)
+        semctl(semid, 0, IPC_RMID);
+    perror(msg);
+    exit(EXIT_FAILURE);
+}
+
+void init_sem(int empty, int full)
+{
+
+    key_t key = ftok("Elgoat", 65);
+    semid = semget(key, 3, 0666 | IPC_CREAT);
+    if (semid == -1)
+        error_exit("semget", shared_buffer);
+    
+    union semun arg;
+    arg.val = 1;
+    if (semctl(semid, SEM_MUTEX, SETVAL, arg) == -1)
+        error_exit("semctl-set-mutex prod", shared_buffer);
+    arg.val = empty;
+    if (semctl(semid, SEM_EMPTY, SETVAL, arg) == -1)
+        error_exit("semctl-set-empty prod", shared_buffer);
+    arg.val = full;
+    if (semctl(semid, SEM_FULL, SETVAL, arg) == -1)
+        error_exit("semctl-set-full prod", shared_buffer);
+}
+
+void init_shm (int buffer_size){
+    key_t key = ftok("Elgoat2", 75);
+    size_t shmsize = sizeof(SharedBuffer) + buffer_size * sizeof(ProdCom);
+
+    shmid = shmget(key, shmsize, IPC_CREAT | 0666);
+
+    if (shmid == -1)
+        error_exit("shmget", NULL);
+
+    shared_buffer = (SharedBuffer *)shmat(shmid, NULL, 0);
+
+    if (shared_buffer == (void *)-1)
+        error_exit("shmat", shared_buffer);
+
+    memset(shared_buffer, 0, shmsize);
+}
+
+void wait_sem(int semnum)
+{
+    struct sembuf op = {semnum, -1, 0};
+    semop(semid, &op, 1);
+}
+
+void signal_sem(int semnum)
+{
+    struct sembuf op = {semnum, 1, 0};
+    semop(semid, &op, 1);
+}
 
 int main(int argc, char *argv[])
 {
@@ -62,157 +126,38 @@ int main(int argc, char *argv[])
     int SleepInterval = atoi(argv[4]);
     int buffer_size = atoi(argv[5]);
 
-    srand(time(NULL) ^ getpid());
+    // hena hainitialize el semaphores
+    init_sem(buffer_size, 0);
+    init_shm(buffer_size);
 
-    if (SleepInterval < 0 || buffer_size <= 0 || MeanPrice <= 0 || StdDev <= 0 || StdDev > MeanPrice)
-    {
-        fprintf(stderr, "Invalid arguments\n");
-        exit(EXIT_FAILURE);
+    while(true){
+        double newPrice = generate_price(MeanPrice, StdDev);
+        
+        struct timespec timeStamp;
+        clock_gettime(CLOCK_REALTIME, &timeStamp);
+        char time_buffer[64];
+        strftime(time_buffer, sizeof(time_buffer), "%Y-%m-%d %H:%M:%S", localtime(&timeStamp.tv_sec));
+
+        log_action("Producer", name, newPrice, "Generated price: %.2f", newPrice);
+
+        wait_sem(SEM_EMPTY);
+        
+        log_action("Producer", name, newPrice, "Acquired SEM_EMPTY getting SEM_MUTEX");
+        wait_sem(SEM_MUTEX);
+
+        log_action("Producer", name, newPrice, "Acquired SEM_MUTEX");
+
+        shared_buffer->buffer[0].Price = newPrice;
+        strncpy(shared_buffer->buffer[0].name, name, MAX_COMMODITY_NAME_LENGTH);
+        
+        log_action("Producer", name, newPrice, "Added to buffer");
+
+        signal_sem(SEM_MUTEX);
+        log_action("Producer", name, newPrice, "Released SEM_MUTEX");
+        signal_sem(SEM_FULL);
+        log_action("Producer", name, newPrice, "Released SEM_FULL");
+
+        usleep(SleepInterval);  
     }
-
-    key_t key = ftok("producer.cpp", 65);
-    printf("key: %d\n", key);
-    if (key == -1)
-        error_exit("ftok", NULL);
-
-    size_t shmsize = sizeof(SharedBuffer) + buffer_size * sizeof(ProdCom);
-    printf("shmsize: %d\n", shmsize);
-    int shmid = shmget(key, shmsize, IPC_CREAT | IPC_EXCL | 0666);
-    bool exists = false;
-    printf("shmid: %d\n", shmid);
-    if (shmid == -1)
-    {
-        if (errno == EEXIST)
-        {
-            shmid = shmget(key, shmsize, 0666);
-            printf("shmid: %d\n", shmid);
-
-            if (shmid == -1)
-                error_exit("shmget", NULL);
-        }
-        else
-            error_exit("shmget", NULL);
-    }
-    else
-    {
-        exists = true;
-    }
-
-    SharedBuffer *shared_buffer = (SharedBuffer *)shmat(shmid, NULL, 0);
-    if (shared_buffer == (void *)-1)
-        error_exit("shmat", shared_buffer);
-    if (exists)
-    {
-        printf("exists\n");
-        if (shared_buffer->buffer_size != buffer_size)
-        {
-            shmdt(shared_buffer);
-            shmctl(shmid, IPC_RMID, NULL);
-            shmid = shmget(key, shmsize, IPC_CREAT | IPC_EXCL | 0666);
-            if (shmid == -1)
-                error_exit("shmget", shared_buffer);
-            shared_buffer = (SharedBuffer *)shmat(shmid, NULL, 0);
-            if (shared_buffer == (void *)-1)
-                error_exit("shmat", shared_buffer);
-        }
-    }
-    else
-    {
-        shared_buffer->buffer_size = buffer_size;
-        shared_buffer->in = 0;
-        shared_buffer->out = 0;
-        shared_buffer->buffer = (ProdCom *)(shared_buffer + 1);
-    }
-
-    int semid = semget(key, 3, 0666 | IPC_CREAT);
-    printf("semid: %d\n", semid);
-
-    if (semid == -1)
-    {
-        if (errno == EEXIST)
-        {
-            semid = semget(key, 3, 0666);
-            if (semid == -1)
-                error_exit("semget", shared_buffer);
-        }
-        else
-        {
-            error_exit("semget", shared_buffer);
-        }
-    }
-    else
-    {
-    }
-
-    if (sem_init(&shared_buffer->sems.mutex, 1, 1) == -1)
-        error_exit("sem_init", shared_buffer);
-    if (sem_init(&shared_buffer->sems.empty, 1, buffer_size) == -1)
-        error_exit("sem_init", shared_buffer);
-    if (sem_init(&shared_buffer->sems.full, 1, 0) == -1)
-        error_exit("sem_init", shared_buffer);
-
-    ProdCom commodity;
-    strncpy(commodity.name, name, MAX_COMMODITY_NAME_LENGTH);
-    commodity.MeanPrice = MeanPrice;
-    commodity.StdDev = StdDev;
-    commodity.SleepInterval = SleepInterval;
-
-    int CircQueue[4] = {0};
-    double avg_price = 0;
-    int count = 0;
-
-    while (true)
-    {
-        log_action("Producer", name, commodity.MeanPrice, "Generated price: %.2f", commodity.MeanPrice);
-        if (wait_sem(semid, SEM_EMPTY) == 0)
-        {
-            // Successfully decremented the semaphore
-            // Safe to proceed with accessing the shared resource
-            wait_sem(semid, SEM_MUTEX);
-
-            // Critical section: produce item and place it in the buffer
-            shared_buffer->buffer[shared_buffer->in] = commodity;
-            shared_buffer->in = (shared_buffer->in + 1) % shared_buffer->buffer_size;
-
-            if(signal_sem(semid, SEM_MUTEX) == -1)
-            {
-                // Semaphore was unavailable, handle accordingly
-                // You might log this event, try again later, or perform other tasks
-                printf("Could not release semaphore, skipping this cycle.\n");
-                // Optional: sleep for a short duration before trying again
-                usleep(1000); // Sleep for 1 millisecond
-            }
-        }
-        else
-        {
-            // Semaphore was unavailable, handle accordingly
-            // You might log this event, try again later, or perform other tasks
-            printf("Could not acquire semaphore, skipping this cycle.\n");
-            // Optional: sleep for a short duration before trying again
-            usleep(1000); // Sleep for 1 millisecond
-        }
-        log_action("Producer", name, commodity.MeanPrice, "Writing to buffer");
-        wait_sem(semid, SEM_MUTEX);
-
-        if (count == 4)
-            count = 0;
-        printf("count: %d\n", count);
-        CircQueue[count] = generate_price(MeanPrice, StdDev);
-        avg_price = (CircQueue[0] + CircQueue[1] + CircQueue[2] + CircQueue[3]) / 4;
-        commodity.AvgPrice = avg_price;
-        log_action("Producer", name, commodity.MeanPrice, "Average price: %.2f", avg_price);
-        commodity.timestamp = time(NULL);
-        commodity.MeanPrice = CircQueue[count];
-
-        shared_buffer->buffer[shared_buffer->in] = commodity;
-        shared_buffer->in = (shared_buffer->in + 1) % shared_buffer->buffer_size;
-
-        signal_sem(semid, SEM_MUTEX);
-        signal_sem(semid, SEM_FULL);
-
-        count++;
-        sleep(SleepInterval);
-    }
-    shmdt(shared_buffer);
     return 0;
 }
